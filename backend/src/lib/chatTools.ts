@@ -112,6 +112,13 @@ Never duplicate the numbering prefix in heading text. The heading's own numberin
 Contracts: when generating a contract or agreement, always include a signatures block at the very end of the document on its own page. Set pageBreak: true on that final section so it starts on a fresh page, and include a signature line for each party — typically the party name followed by lines for "By:", "Name:", "Title:", and "Date:". Do not number the signatures heading; put the signature block in the section's content rather than as a numbered heading.
 Contract preambles: the preamble of a contract (the opening recitals, parties block, "WHEREAS" clauses, and any introductory narrative before the first operative clause) must NOT be numbered. Render these as unnumbered content (plain paragraphs or an unnumbered heading), and begin numbering only at the first operative clause/section.
 
+REDLINES AND COMMENTS:
+When you read a DOCX, existing tracked changes and Word comments are surfaced as inline markers so you can see them:
+- \`{++inserted text++}\` — text the previous author proposed inserting (a tracked insertion)
+- \`{--deleted text--}\` — text the previous author proposed deleting (a tracked deletion, still shown so you can reason about what was removed)
+- \`{>>by AUTHOR: comment body<<}\` — a Word comment anchored at this point, including who wrote it
+These markers are informational only. They are NOT part of the underlying document text. When forming \`find\`, \`context_before\`, or \`context_after\` strings for edit_document, write the underlying text WITHOUT the markers (e.g. for \`{++new clause++}\` use \`new clause\`; for \`{--old text--}\` the matcher will not see the deleted text at all, so anchor on surrounding context instead). When the user asks about edits or comments in the document, refer to them by what they say and who said them.
+
 DOCUMENT EDITING:
 When using edit_document, any edit that adds, removes, or reorders a numbered clause, section, sub-clause, schedule, exhibit, or list item shifts every downstream number. You MUST update all affected numbering AND every cross-reference to those numbers in the same edit_document call:
 - Renumber the sibling clauses/sections/sub-clauses that follow the change so the sequence stays contiguous (e.g. if you insert a new Section 4, existing Sections 4, 5, 6… become 5, 6, 7…).
