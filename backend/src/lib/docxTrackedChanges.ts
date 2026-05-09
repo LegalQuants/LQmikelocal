@@ -710,11 +710,146 @@ function maxTrackedId(doc: XNode[]): number {
 }
 
 /**
- * Extract the body text of a .docx using the same flattening rules as the
- * tracked-changes matcher. Paragraphs are joined by a single newline. The
- * output is what the LLM should base its `find` / `context_before` /
- * `context_after` strings on, since it exactly mirrors the string the
- * anchor matcher operates against.
+ * Read word/comments.xml and build id -> {author, body} map. Missing file
+ * (no comments) returns an empty map.
+ */
+async function loadCommentsMap(
+    zip: JSZip,
+): Promise<Map<string, { author: string; text: string }>> {
+    const out = new Map<string, { author: string; text: string }>();
+    const file = getZipEntry(zip, "word/comments.xml");
+    if (!file) return out;
+    const raw = await file.async("string");
+    const parser = createParser();
+    const tree = parser.parse(raw) as XNode[];
+
+    // Walk in document order. Each w:p in the comment body becomes a line
+    // separated by a single space so multi-paragraph comments survive
+    // round-trip through a single-line marker without losing word
+    // boundaries.
+    const collectParaText = (p: XNode): string => {
+        let s = "";
+        const visit = (node: XNode) => {
+            for (const k of elChildren(node)) {
+                const kn = elName(k);
+                if (kn === "w:t") s += getTextContent(k);
+                else if (kn) visit(k);
+            }
+        };
+        visit(p);
+        return s;
+    };
+    const collectInnerText = (commentNode: XNode): string => {
+        const parts: string[] = [];
+        const visit = (node: XNode) => {
+            for (const k of elChildren(node)) {
+                const kn = elName(k);
+                if (kn === "w:p") {
+                    const t = collectParaText(k);
+                    if (t) parts.push(t);
+                } else if (kn) {
+                    visit(k);
+                }
+            }
+        };
+        visit(commentNode);
+        return parts.join(" ");
+    };
+
+    const visit = (n: XNode) => {
+        if (elName(n) === "w:comment") {
+            const a = elAttrs(n);
+            const id = a["@_w:id"] ?? "";
+            const author = a["@_w:author"] ?? "unknown";
+            const text = collectInnerText(n).trim();
+            if (id) out.set(String(id), { author, text });
+            return;
+        }
+        for (const c of elChildren(n)) visit(c);
+    };
+    for (const top of tree) visit(top);
+    return out;
+}
+
+/**
+ * Flatten a paragraph to a string while preserving redline + comment
+ * markers so the LLM can reason about them. Insertions become
+ * `{++text++}`, deletions become `{--text--}`, comment anchors become
+ * `{>>by AUTHOR: body<<}`. The matcher in `applyTrackedEdits` runs its
+ * own marker-free flattening, so this function is read-only — the LLM is
+ * told (in the system prompt) to strip markers when forming `find` /
+ * `context_before` / `context_after` for `edit_document`.
+ */
+function paragraphTextWithMarkers(
+    paraChildren: XNode[],
+    comments: Map<string, { author: string; text: string }>,
+): string {
+    let out = "";
+
+    const collectRunInner = (rEl: XNode): string => {
+        let s = "";
+        for (const k of elChildren(rEl)) {
+            const n = elName(k);
+            if (n === "w:t" || n === "w:delText") s += getTextContent(k);
+            else if (n === "w:commentReference") {
+                const a = elAttrs(k);
+                const id = a["@_w:id"] ?? "";
+                const c = comments.get(String(id));
+                if (c) s += `{>>by ${c.author}: ${c.text}<<}`;
+            }
+        }
+        return s;
+    };
+
+    const collectInsDelInner = (wrapper: XNode): string => {
+        let s = "";
+        for (const sub of elChildren(wrapper)) {
+            const n = elName(sub);
+            if (n === "w:r") s += collectRunInner(sub);
+            else if (n === "w:ins" || n === "w:del" || n === "w:smartTag" || n === "w:hyperlink") {
+                // Nested wrappers — flatten without re-emitting the outer marker.
+                s += collectInsDelInner(sub);
+            }
+        }
+        return s;
+    };
+
+    const walk = (nodes: XNode[]) => {
+        for (const child of nodes) {
+            const name = elName(child);
+            if (!name) continue;
+            if (name === "w:r") {
+                out += collectRunInner(child);
+            } else if (name === "w:ins") {
+                const inner = collectInsDelInner(child);
+                if (inner) out += `{++${inner}++}`;
+            } else if (name === "w:del") {
+                const inner = collectInsDelInner(child);
+                if (inner) out += `{--${inner}--}`;
+            } else if (
+                name === "w:smartTag" ||
+                name === "w:hyperlink" ||
+                name === "w:sdt" ||
+                name === "w:sdtContent"
+            ) {
+                walk(elChildren(child));
+            }
+            // w:commentRangeStart / w:commentRangeEnd / w:bookmarkStart etc.
+            // are skipped — we anchor comments at w:commentReference inside
+            // their containing run.
+        }
+    };
+
+    walk(paraChildren);
+    return out;
+}
+
+/**
+ * Extract the body text of a .docx so the LLM can read it. Insertions,
+ * deletions, and comments are surfaced as inline markers (see
+ * `paragraphTextWithMarkers`) — for documents with no tracked changes or
+ * comments the output is identical to the matcher's accepted-view text.
+ * Paragraphs are joined by a single newline.
  */
 export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
     const zip = await JSZip.loadAsync(bytes);
@@ -726,14 +861,15 @@ export async function extractDocxBodyText(bytes: Buffer): Promise<string> {
     const bodyChildren = findBody(tree);
     if (!bodyChildren) return "";
 
+    const comments = await loadCommentsMap(zip);
+
     const lines: string[] = [];
     const collect = (nodes: XNode[]) => {
         for (const n of nodes) {
             const name = elName(n);
             if (!name) continue;
             if (name === "w:p") {
-                const flat = flattenParagraph(elChildren(n));
-                lines.push(flat.paraText);
+                lines.push(paragraphTextWithMarkers(elChildren(n), comments));
             } else if (
                 name === "w:tbl" ||
                 name === "w:tr" ||

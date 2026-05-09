@@ -1,6 +1,6 @@
 {
   "name": "mikelocal-desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mike — local desktop AI legal platform (Electron shell over the upstream Next.js + Express app)",
   "license": "AGPL-3.0-only",
   "private": true,
