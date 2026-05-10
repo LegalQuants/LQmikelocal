@@ -766,6 +766,7 @@ export async function createWorkflow(payload: {
     prompt_md?: string;
     columns_config?: { index: number; name: string; prompt: string }[];
     practice?: string | null;
+    source_label?: string | null;
 }): Promise<MikeWorkflow> {
     return apiRequest<MikeWorkflow>("/workflows", {
         method: "POST",
@@ -781,6 +782,7 @@ export async function updateWorkflow(
         prompt_md?: string;
         columns_config?: { index: number; name: string; prompt: string }[];
         practice?: string | null;
+        source_label?: string | null;
     },
 ): Promise<MikeWorkflow> {
     return apiRequest<MikeWorkflow>(`/workflows/${workflowId}`, {
@@ -810,35 +812,23 @@ export async function unhideWorkflow(workflowId: string): Promise<void> {
     await apiRequest(`/workflows/hidden/${workflowId}`, { method: "DELETE" });
 }
 
-export async function shareWorkflow(
-    workflowId: string,
-    payload: { emails: string[]; allow_edit: boolean },
-): Promise<void> {
-    await apiRequest<void>(`/workflows/${workflowId}/share`, {
+export interface WorkflowFile {
+    format: "mikelocal.workflow";
+    version: 1;
+    title: string;
+    type: "assistant" | "tabular";
+    practice?: string | null;
+    source_label?: string | null;
+    prompt_md?: string | null;
+    columns_config?: { index: number; name: string; format?: string; prompt: string }[] | null;
+}
+
+export async function importWorkflow(
+    payload: WorkflowFile,
+): Promise<MikeWorkflow> {
+    return apiRequest<MikeWorkflow>("/workflows/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
-    });
-}
-
-export async function listWorkflowShares(
-    workflowId: string,
-): Promise<
-    {
-        id: string;
-        shared_with_email: string;
-        allow_edit: boolean;
-        created_at: string;
-    }[]
-> {
-    return apiRequest(`/workflows/${workflowId}/shares`);
-}
-
-export async function deleteWorkflowShare(
-    workflowId: string,
-    shareId: string,
-): Promise<void> {
-    await apiRequest(`/workflows/${workflowId}/shares/${shareId}`, {
-        method: "DELETE",
     });
 }

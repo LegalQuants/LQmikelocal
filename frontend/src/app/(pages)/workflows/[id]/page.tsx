@@ -3,9 +3,9 @@
 import { use, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import dynamic from "next/dynamic";
-import { ChevronDown, Plus, Users, X } from "lucide-react";
+import { Check, ChevronDown, Download, Plus, X } from "lucide-react";
 import { getWorkflow, updateWorkflow } from "@/app/lib/mikeApi";
-import { ShareWorkflowModal } from "@/app/components/workflows/ShareWorkflowModal";
+import { downloadWorkflow } from "@/app/lib/workflowFile";
 import { WFEditColumnModal } from "@/app/components/workflows/WFEditColumnModal";
 import { WFColumnViewModal } from "@/app/components/workflows/WFColumnViewModal";
 import { AddColumnModal } from "@/app/components/tabular/AddColumnModal";
@@ -50,7 +50,7 @@ export default function WorkflowDetailPage({ params }: Props) {
         isBuiltin ||
         (workflow?.is_system ?? false) ||
         workflow?.allow_edit === false;
-    const canShare = !readOnly && (workflow?.is_owner ?? true);
+    const canDownload = !!workflow;
 
     // Editor state
     const [promptMd, setPromptMd] = useState("");
@@ -67,9 +67,6 @@ export default function WorkflowDetailPage({ params }: Props) {
     const [addColumnOpen, setAddColumnOpen] = useState(false);
     const [editingColumn, setEditingColumn] = useState<ColumnConfig | null>(null);
     const [viewingColumn, setViewingColumn] = useState<ColumnConfig | null>(null);
-
-    // Share popover
-    const [shareOpen, setShareOpen] = useState(false);
 
     // Column actions dropdown
     const [colActionsOpen, setColActionsOpen] = useState(false);
@@ -147,6 +144,23 @@ export default function WorkflowDetailPage({ params }: Props) {
         const next = val ?? "";
         setPromptMd(next);
         save(next);
+    }
+
+    async function handleDone() {
+        if (debounceRef.current) {
+            clearTimeout(debounceRef.current);
+            debounceRef.current = null;
+        }
+        if (!readOnly) {
+            try {
+                setSaveStatus("saving");
+                await updateWorkflow(id, { prompt_md: promptMd });
+                setSaveStatus("saved");
+            } catch {
+                setSaveStatus("idle");
+            }
+        }
+        router.push("/workflows");
     }
 
     // ---------------------------------------------------------------------------
@@ -278,23 +292,16 @@ export default function WorkflowDetailPage({ params }: Props) {
                               : ""}
                     </span>
 
-                    {/* Share button (custom workflows only) */}
-                    {canShare && (
+                    {/* Download button (custom workflows only) */}
+                    {canDownload && workflow && (
                         <button
-                            onClick={() => setShareOpen(true)}
-                            aria-label="Open workflow people"
-                            title="People"
+                            onClick={() => downloadWorkflow(workflow)}
+                            aria-label="Download workflow"
+                            title="Download workflow"
                             className="flex items-center text-gray-500 hover:text-gray-900 transition-colors"
                         >
-                            <Users className="h-4 w-4" />
+                            <Download className="h-4 w-4" />
                         </button>
-                    )}
-                    {shareOpen && (
-                        <ShareWorkflowModal
-                            workflowId={id}
-                            workflowName={workflow.title}
-                            onClose={() => setShareOpen(false)}
-                        />
                     )}
                 </div>
             </div>
@@ -468,6 +475,18 @@ export default function WorkflowDetailPage({ params }: Props) {
                         </div>
                     </div>
                 )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end border-t border-gray-100 px-8 py-3 shrink-0">
+                <button
+                    onClick={handleDone}
+                    disabled={saveStatus === "saving"}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gray-900 px-5 py-2 text-sm font-medium text-white hover:bg-gray-700 disabled:opacity-40 transition-colors"
+                >
+                    <Check className="h-3.5 w-3.5" />
+                    {readOnly ? "Done" : saveStatus === "saving" ? "Saving…" : "Save & exit"}
+                </button>
             </div>
 
             {/* Read-only column view modal */}

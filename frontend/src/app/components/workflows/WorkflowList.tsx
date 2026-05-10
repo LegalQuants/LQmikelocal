@@ -19,10 +19,12 @@ import {
     hideWorkflow,
     unhideWorkflow,
 } from "@/app/lib/mikeApi";
+import { downloadWorkflow } from "@/app/lib/workflowFile";
 import type { MikeWorkflow } from "../shared/types";
 import { BUILT_IN_WORKFLOWS, BUILT_IN_IDS } from "./builtinWorkflows";
 import { DisplayWorkflowModal } from "./DisplayWorkflowModal";
 import { NewWorkflowModal } from "./NewWorkflowModal";
+import { UploadWorkflowButton } from "./UploadWorkflowButton";
 import { ToolbarTabs } from "../shared/ToolbarTabs";
 import { RowActions } from "../shared/RowActions";
 import { MikeIcon } from "@/components/chat/mike-icon";
@@ -48,6 +50,7 @@ export function WorkflowList() {
     const [selected, setSelected] = useState<MikeWorkflow | null>(null);
     const [activeTab, setActiveTab] = useState<Tab>("all");
     const [newModalOpen, setNewModalOpen] = useState(false);
+    const [editingWorkflow, setEditingWorkflow] = useState<MikeWorkflow | null>(null);
     const [hiddenBuiltinIds, setHiddenBuiltinIds] = useState<string[]>([]);
     const [selectedIds, setSelectedIds] = useState<string[]>([]);
     const [actionsOpen, setActionsOpen] = useState(false);
@@ -356,7 +359,7 @@ export function WorkflowList() {
     );
 
     return (
-        <div className="flex flex-col flex-1 overflow-hidden bg-white">
+        <div className="flex flex-col h-full overflow-hidden bg-white">
             {/* Page header */}
             <div className="flex items-center justify-between px-8 py-4 shrink-0">
                 <h1 className="text-2xl font-medium font-serif text-gray-900">
@@ -367,6 +370,12 @@ export function WorkflowList() {
                         value={search}
                         onChange={setSearch}
                         placeholder="Search workflows…"
+                    />
+                    <UploadWorkflowButton
+                        onUploaded={(wf) => {
+                            setCustom((prev) => [wf, ...prev]);
+                            router.push(`/workflows/${wf.id}`);
+                        }}
                     />
                     <button
                         onClick={() => setNewModalOpen(true)}
@@ -538,17 +547,15 @@ export function WorkflowList() {
                                             <MikeIcon size={14} />
                                             Mike
                                         </span>
-                                    ) : wf.user_id === user?.id ? (
+                                    ) : wf.source_label ? (
+                                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 truncate max-w-full">
+                                            <User className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                                            <span className="truncate">{wf.source_label}</span>
+                                        </span>
+                                    ) : (
                                         <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600">
                                             <User className="h-3.5 w-3.5 text-gray-500" />
                                             Myself
-                                        </span>
-                                    ) : (
-                                        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-600 truncate max-w-full">
-                                            <User className="h-3.5 w-3.5 text-gray-400 shrink-0" />
-                                            <span className="truncate">
-                                                {wf.shared_by_name ?? "Shared"}
-                                            </span>
                                         </span>
                                     )}
                                 </div>
@@ -559,19 +566,23 @@ export function WorkflowList() {
                                     {wf.is_system ? (
                                         activeTab === "hidden" ? (
                                             <RowActions
+                                                onDownload={() => downloadWorkflow(wf)}
                                                 onUnhide={() =>
                                                     handleUnhideWorkflow(wf.id)
                                                 }
                                             />
                                         ) : (
                                             <RowActions
+                                                onDownload={() => downloadWorkflow(wf)}
                                                 onHide={() =>
                                                     handleHideWorkflow(wf.id)
                                                 }
                                             />
                                         )
-                                    ) : wf.is_owner === false ? null : (
+                                    ) : (
                                         <RowActions
+                                            onRename={() => setEditingWorkflow(wf)}
+                                            onDownload={() => downloadWorkflow(wf)}
                                             onDelete={async () => {
                                                 await deleteWorkflow(wf.id);
                                                 setCustom((prev) =>
@@ -603,6 +614,19 @@ export function WorkflowList() {
                     setCustom((prev) => [wf, ...prev]);
                     setNewModalOpen(false);
                     router.push(`/workflows/${wf.id}`);
+                }}
+            />
+
+            <NewWorkflowModal
+                open={!!editingWorkflow}
+                editWorkflow={editingWorkflow ?? undefined}
+                onClose={() => setEditingWorkflow(null)}
+                onCreated={() => {}}
+                onUpdated={(updated) => {
+                    setCustom((prev) =>
+                        prev.map((w) => (w.id === updated.id ? updated : w)),
+                    );
+                    setEditingWorkflow(null);
                 }}
             />
         </div>

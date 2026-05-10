@@ -18,7 +18,7 @@ interface Props {
 
 export function RowActions({ onDelete, onHide, onUnhide, onDownload, onRemoveFromFolder, onShowAllVersions, onUploadNewVersion, deleting, onRename, onUpdateCmNumber }: Props) {
     const [open, setOpen] = useState(false);
-    const [coords, setCoords] = useState({ top: 0, right: 0 });
+    const [coords, setCoords] = useState<{ top?: number; bottom?: number; right: number }>({ top: 0, right: 0 });
     const btnRef = useRef<HTMLButtonElement>(null);
 
     useEffect(() => {
@@ -34,10 +34,18 @@ export function RowActions({ onDelete, onHide, onUnhide, onDownload, onRemoveFro
         e.stopPropagation();
         if (!open && btnRef.current) {
             const rect = btnRef.current.getBoundingClientRect();
-            setCoords({
-                top: rect.bottom + 4,
-                right: window.innerWidth - rect.right,
-            });
+            // Estimate menu height: each item ~32px, plus ~2px for border.
+            const itemCount = [onRename, onUpdateCmNumber, onDownload, onShowAllVersions, onUploadNewVersion, onRemoveFromFolder, onUnhide, onHide, onDelete].filter(Boolean).length;
+            const estimatedHeight = itemCount * 32 + 2;
+            const spaceBelow = window.innerHeight - rect.bottom;
+            const right = window.innerWidth - rect.right;
+            if (spaceBelow >= estimatedHeight + 8 || rect.top < estimatedHeight + 8) {
+                // Open downward (default, or not enough space above either).
+                setCoords({ top: rect.bottom + 4, right });
+            } else {
+                // Flip upward — anchor by `bottom` so the menu sits above the trigger.
+                setCoords({ bottom: window.innerHeight - rect.top + 4, right });
+            }
         }
         setOpen((o) => !o);
     }
@@ -54,7 +62,7 @@ export function RowActions({ onDelete, onHide, onUnhide, onDownload, onRemoveFro
 
             {open && (
                 <div
-                    style={{ position: "fixed", top: coords.top, right: coords.right }}
+                    style={{ position: "fixed", top: coords.top, bottom: coords.bottom, right: coords.right }}
                     className="z-50 w-48 rounded-xl border border-gray-100 bg-white shadow-lg overflow-hidden"
                     onClick={(e) => e.stopPropagation()}
                 >
