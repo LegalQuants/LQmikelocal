@@ -19,6 +19,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
     const [type, setType] = useState<"assistant" | "tabular">("assistant");
     const [practice, setPractice] = useState<string>("");
     const [customPractice, setCustomPractice] = useState("");
+    const [sourceLabel, setSourceLabel] = useState("");
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const customInputRef = useRef<HTMLInputElement>(null);
@@ -40,6 +41,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                 setPractice(saved);
                 setCustomPractice("");
             }
+            setSourceLabel(editWorkflow.source_label ?? "");
             setError("");
         }
     }, [open, editWorkflow?.id]);
@@ -58,10 +60,12 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
         setLoading(true);
         setError("");
         try {
+            const trimmedSource = sourceLabel.trim();
             if (isEditing && editWorkflow) {
                 const updated = await updateWorkflow(editWorkflow.id, {
                     title: title.trim(),
                     practice: effectivePractice,
+                    source_label: trimmedSource ? trimmedSource : null,
                 });
                 onUpdated?.(updated);
             } else {
@@ -69,6 +73,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                     title: title.trim(),
                     type,
                     practice: effectivePractice,
+                    source_label: trimmedSource ? trimmedSource : null,
                 });
                 onCreated(workflow);
             }
@@ -86,6 +91,7 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
         setType("assistant");
         setPractice("");
         setCustomPractice("");
+        setSourceLabel("");
         setError("");
     }
 
@@ -187,6 +193,18 @@ export function NewWorkflowModal({ open, onClose, onCreated, editWorkflow, onUpd
                                     className="mt-3 w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-700 placeholder-gray-400 focus:border-gray-400 focus:outline-none"
                                 />
                             )}
+                        </div>
+
+                        {/* Source label */}
+                        <div className="mt-5">
+                            <p className="mb-2 text-sm font-medium text-gray-500">Source</p>
+                            <input
+                                type="text"
+                                value={sourceLabel}
+                                onChange={(e) => setSourceLabel(e.target.value)}
+                                placeholder="e.g. Acme Legal — leave blank for “Myself”"
+                                className="w-full rounded-md border border-gray-200 px-3 py-1.5 text-sm text-gray-700 placeholder-gray-400 focus:border-gray-400 focus:outline-none"
+                            />
                         </div>
 
                         {error && (

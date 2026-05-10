@@ -282,6 +282,7 @@ export interface MikeWorkflow {
   is_system: boolean;
   created_at: string;
   practice?: string | null;
+  source_label?: string | null;
   shared_by_name?: string | null;
   allow_edit?: boolean;
   is_owner?: boolean;

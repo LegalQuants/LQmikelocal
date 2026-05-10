@@ -2802,7 +2802,7 @@ export async function buildWorkflowStore(
 ): Promise<WorkflowStore> {
     const { BUILTIN_WORKFLOWS } = await import("./builtinWorkflows");
     const store: WorkflowStore = new Map();
-    const normalizedUserEmail = (userEmail ?? "").trim().toLowerCase();
+    void userEmail;
 
     // Seed built-ins first
     for (const wf of BUILTIN_WORKFLOWS) {
@@ -2821,25 +2821,5 @@ export async function buildWorkflowStore(
         }
     }
 
-    // Shared assistant workflows must also be readable by workflow tools.
-    if (normalizedUserEmail) {
-        const { data: shares } = await db
-            .from("workflow_shares")
-            .select("workflow_id")
-            .eq("shared_with_email", normalizedUserEmail);
-        const sharedIds = [...new Set((shares ?? []).map((share) => share.workflow_id))];
-        if (sharedIds.length > 0) {
-            const { data: sharedWorkflows } = await db
-                .from("workflows")
-                .select("id, title, prompt_md")
-                .in("id", sharedIds)
-                .eq("type", "assistant");
-            for (const wf of sharedWorkflows ?? []) {
-                if (wf.prompt_md) {
-                    store.set(wf.id, { title: wf.title, prompt_md: wf.prompt_md });
-                }
-            }
-        }
-    }
     return store;
 }
