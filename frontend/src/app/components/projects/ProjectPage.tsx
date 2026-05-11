@@ -61,6 +61,7 @@ import { OwnerOnlyModal } from "@/app/components/shared/OwnerOnlyModal";
 import { useAuth } from "@/contexts/AuthContext";
 import { UploadNewVersionModal } from "@/app/components/shared/UploadNewVersionModal";
 import { DocViewModal } from "@/app/components/shared/DocViewModal";
+import { ProjectGraph } from "@/app/components/projects/graph/ProjectGraph";
 import { AddNewTRModal } from "@/app/components/tabular/AddNewTRModal";
 import { useChatHistoryContext } from "@/app/contexts/ChatHistoryContext";
 
@@ -68,7 +69,7 @@ interface Props {
     projectId: string;
 }
 
-type Tab = "documents" | "assistant" | "reviews";
+type Tab = "documents" | "assistant" | "reviews" | "graph";
 
 type ContextMenu = {
     x: number;
@@ -280,7 +281,9 @@ export function ProjectPage({ projectId }: Props) {
     const searchParams = useSearchParams();
     const tabParam = searchParams.get("tab");
     const tab: Tab =
-        tabParam === "assistant" || tabParam === "reviews"
+        tabParam === "assistant" ||
+        tabParam === "reviews" ||
+        tabParam === "graph"
             ? tabParam
             : "documents";
     const [addDocsOpen, setAddDocsOpen] = useState(false);
@@ -1319,6 +1322,7 @@ export function ProjectPage({ projectId }: Props) {
                     { id: "documents", label: "Documents" },
                     { id: "assistant", label: "Assistant" },
                     { id: "reviews", label: "Tabular Reviews" },
+                    { id: "graph", label: "Graph" },
                 ]}
                 active={tab}
                 onChange={handleTabChange}
@@ -1329,7 +1333,36 @@ export function ProjectPage({ projectId }: Props) {
                 }
             />
 
+            {/* Graph tab renders outside the table wrappers (min-w-max
+                collapses ReactFlow to 0 width because RF doesn't push
+                intrinsic content width). */}
+            {tab === "graph" && (
+                <div className="flex-1 min-h-0 w-full flex">
+                    <ProjectGraph
+                        projectId={projectId}
+                        documents={project.documents ?? []}
+                        onOpenDoc={(d) => {
+                            setViewingDoc(d);
+                            setViewingDocVersion(null);
+                        }}
+                        onOpenInChat={async (d) => {
+                            // Mirror the existing "new chat" flow from
+                            // handleNewChat(), then hand off to the chat
+                            // page with ?attachDoc so it pre-attaches the
+                            // document for the user's first message.
+                            const id = await saveChat(projectId);
+                            if (id) {
+                                router.push(
+                                    `/projects/${projectId}/assistant/chat/${id}?attachDoc=${encodeURIComponent(d.id)}`,
+                                );
+                            }
+                        }}
+                    />
+                </div>
+            )}
+
             {/* Table content */}
+            {tab !== "graph" && (
             <div className="w-full flex-1 min-h-0 overflow-x-auto">
             <div className="min-w-max flex min-h-full flex-col">
 
@@ -1709,8 +1742,10 @@ export function ProjectPage({ projectId }: Props) {
                         )}
                     </>
                 )}
+
             </div>
             </div>
+            )}
 
             <AddDocumentsModal
                 open={addDocsOpen}

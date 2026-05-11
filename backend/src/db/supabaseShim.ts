@@ -79,6 +79,7 @@ const JSON_COLUMNS_BY_TABLE: Record<string, Set<string>> = {
   chat_messages: new Set(["content", "files", "annotations"]),
   tabular_cells: new Set(["citations"]),
   tabular_review_chat_messages: new Set(["content", "annotations"]),
+  document_graph_layouts: new Set(["positions"]),
 };
 
 function isJsonColumn(table: string, col: string): boolean {

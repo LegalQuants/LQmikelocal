@@ -163,6 +163,99 @@ export async function getProjectPeople(
 }
 
 // ---------------------------------------------------------------------------
+// Document graph links (Phase 09 backend / Phase 10 frontend)
+// ---------------------------------------------------------------------------
+
+export interface DocumentLink {
+    id: string;
+    project_id: string;
+    source_doc_id: string;
+    target_doc_id: string;
+    link_type: string;
+    citation_text: string | null;
+    created_by: "user" | "llm";
+    user_id: string;
+    created_at: string;
+}
+
+export async function listDocumentLinks(
+    projectId: string,
+): Promise<DocumentLink[]> {
+    return apiRequest<DocumentLink[]>(`/projects/${projectId}/links`);
+}
+
+export async function createDocumentLink(
+    projectId: string,
+    payload: {
+        source_doc_id: string;
+        target_doc_id: string;
+        link_type?: string;
+    },
+): Promise<DocumentLink> {
+    return apiRequest<DocumentLink>(`/projects/${projectId}/links`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+    });
+}
+
+export async function deleteDocumentLink(
+    projectId: string,
+    linkId: string,
+): Promise<void> {
+    await apiRequest<void>(`/projects/${projectId}/links/${linkId}`, {
+        method: "DELETE",
+    });
+}
+
+export interface LinkProposal {
+    source_doc_id: string;
+    target_doc_id: string;
+    link_type: string;
+    citation_text: string;
+}
+
+export async function extractDocumentLinks(
+    projectId: string,
+): Promise<{ proposals: LinkProposal[]; model?: string; note?: string }> {
+    return apiRequest(`/projects/${projectId}/links/extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+    });
+}
+
+export async function bulkCreateDocumentLinks(
+    projectId: string,
+    proposals: LinkProposal[],
+): Promise<{ inserted: DocumentLink[]; skipped: unknown[] }> {
+    return apiRequest(`/projects/${projectId}/links/bulk`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proposals }),
+    });
+}
+
+export type GraphPositions = Record<string, { x: number; y: number }>;
+
+export async function getGraphLayout(
+    projectId: string,
+): Promise<{ positions: GraphPositions }> {
+    return apiRequest(`/projects/${projectId}/graph-layout`);
+}
+
+export async function saveGraphLayout(
+    projectId: string,
+    positions: GraphPositions,
+): Promise<{ ok: true }> {
+    return apiRequest(`/projects/${projectId}/graph-layout`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ positions }),
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Documents
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { X, Users, Upload } from "lucide-react";
+import { X, Upload } from "lucide-react";
 import {
     addDocumentToProject,
     createProject,
@@ -9,7 +9,6 @@ import {
 } from "@/app/lib/mikeApi";
 import { useDirectoryData } from "../shared/useDirectoryData";
 import { FileDirectory } from "../shared/FileDirectory";
-import { EmailPillInput } from "../shared/EmailPillInput";
 import type { MikeProject } from "../shared/types";
 
 interface Props {
@@ -21,8 +20,6 @@ interface Props {
 export function NewProjectModal({ open, onClose, onCreated }: Props) {
     const [name, setName] = useState("");
     const [cmNumber, setCmNumber] = useState("");
-    const [sharedEmails, setSharedEmails] = useState<string[]>([]);
-    const [showMembers, setShowMembers] = useState(false);
     const [selectedDocIds, setSelectedDocIds] = useState<Set<string>>(new Set());
     const [pendingFiles, setPendingFiles] = useState<File[]>([]);
     const [loading, setLoading] = useState(false);
@@ -49,7 +46,6 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
             const project = await createProject(
                 name.trim(),
                 cmNumber.trim() || undefined,
-                sharedEmails,
             );
             await Promise.all([
                 ...[...selectedDocIds].map((id) => addDocumentToProject(project.id, id).catch(() => {})),
@@ -68,8 +64,6 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
     function resetForm() {
         setName("");
         setCmNumber("");
-        setSharedEmails([]);
-        setShowMembers(false);
         setSelectedDocIds(new Set());
         setPendingFiles([]);
         setError("");
@@ -118,29 +112,6 @@ export function NewProjectModal({ open, onClose, onCreated }: Props) {
                             placeholder="Add a CM number..."
                             className="mt-1.5 w-full text-sm text-gray-500 placeholder-gray-300 focus:outline-none bg-transparent"
                         />
-
-                        {/* Attribute pills */}
-                        <div className="mt-4 flex flex-wrap items-center gap-2">
-                            <button
-                                type="button"
-                                onClick={() => setShowMembers((v) => !v)}
-                                className="flex items-center gap-1.5 rounded-full border border-gray-200 px-3 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors"
-                            >
-                                <Users className="h-3 w-3 text-gray-400" />
-                                Members{sharedEmails.length > 0 ? ` (${sharedEmails.length})` : ""}
-                            </button>
-                        </div>
-
-                        {/* Members panel */}
-                        {showMembers && (
-                            <div className="mt-3">
-                                <EmailPillInput
-                                    emails={sharedEmails}
-                                    onChange={setSharedEmails}
-                                    placeholder="Add colleagues by email…"
-                                />
-                            </div>
-                        )}
 
                         {/* Documents */}
                         <div className="mt-4 space-y-2">

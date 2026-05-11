@@ -9,6 +9,10 @@ import { downloadFile, uploadFile, storageKey } from "../lib/storage";
 import { docxToPdf, convertedPdfKey } from "../lib/convert";
 import { checkProjectAccess } from "../lib/access";
 import { singleFileUpload } from "../lib/upload";
+import { completeText } from "../lib/llm";
+import { extractPdfText, loadCurrentVersionBytes } from "../lib/chatTools";
+import { extractDocxBodyText } from "../lib/docxTrackedChanges";
+import { getUserModelSettings } from "../lib/userSettings";
 
 export const projectsRouter = Router();
 const ALLOWED_TYPES = new Set(["pdf", "docx", "doc"]);
@@ -587,6 +591,575 @@ projectsRouter.patch("/:projectId/documents/:documentId/folder", requireAuth, as
   if (error || !data) return void res.status(404).json({ detail: "Document not found" });
   res.json(data);
 });
+
+// ---------------------------------------------------------------------------
+// Document graph links (Phase 09)
+//
+// Per-project typed edges between documents, surfaced in the Graph tab of
+// ProjectPage. Manual links carry created_by='user'; LLM-extracted ones
+// (Phase 11) carry created_by='llm'. The unique (source, target, type)
+// constraint keeps the graph tidy when the same proposal is accepted twice.
+// ---------------------------------------------------------------------------
+
+const ALLOWED_LINK_TYPES = new Set([
+  "references",
+  "amends",
+  "supersedes",
+  "exhibit-of",
+  "cited-by",
+  "related",
+]);
+
+function normaliseLinkType(raw: unknown): string | null {
+  if (typeof raw !== "string") return "references";
+  const trimmed = raw.trim();
+  if (!trimmed) return "references";
+  // Accept the curated vocabulary case-insensitively; otherwise allow a free
+  // string but cap its length so a misbehaving caller can't store essays.
+  const lower = trimmed.toLowerCase();
+  if (ALLOWED_LINK_TYPES.has(lower)) return lower;
+  if (trimmed.length > 64) return null;
+  return trimmed;
+}
+
+// GET /projects/:projectId/links
+projectsRouter.get("/:projectId/links", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId } = req.params;
+  const db = createServerSupabase();
+
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Project not found" });
+
+  const { data, error } = await db
+    .from("document_links")
+    .select("*")
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: true });
+  if (error) return void res.status(500).json({ detail: error.message });
+  res.json(data ?? []);
+});
+
+// POST /projects/:projectId/links
+projectsRouter.post("/:projectId/links", requireAuth, async (req, res) => {
+  const userId = res.locals.userId as string;
+  const userEmail = res.locals.userEmail as string | undefined;
+  const { projectId } = req.params;
+  const { source_doc_id, target_doc_id, link_type } = req.body as {
+    source_doc_id?: string;
+    target_doc_id?: string;
+    link_type?: string;
+  };
+
+  if (!source_doc_id || !target_doc_id)
+    return void res
+      .status(400)
+      .json({ detail: "source_doc_id and target_doc_id are required" });
+  if (source_doc_id === target_doc_id)
+    return void res
+      .status(400)
+      .json({ detail: "source and target must differ" });
+  const type = normaliseLinkType(link_type);
+  if (type === null)
+    return void res.status(400).json({ detail: "link_type too long" });
+
+  const db = createServerSupabase();
+  const access = await checkProjectAccess(projectId, userId, userEmail, db);
+  if (!access.ok)
+    return void res.status(404).json({ detail: "Project not found" });
+
+  // Both documents must live in this project — protects against linking
+  // documents the caller can see in another project.
+  const { data: docs } = await db
+    .from("documents")
+    .select("id, project_id")
+    .in("id", [source_doc_id, target_doc_id]);
+  const found = (docs ?? []) as { id: string; project_id: string | null }[];
+  if (found.length !== 2 || found.some((d) => d.project_id !== projectId))
+    return void res
+      .status(400)
+      .json({ detail: "Both documents must belong to this project" });
+
+  const { data, error } = await db
+    .from("document_links")
+    .insert({
+      project_id: projectId,
+      source_doc_id,
+      target_doc_id,
+      link_type: type,
+      created_by: "user",
+      user_id: userId,
+    })
+    .select("*")
+    .single();
+  if (error) {
+    // SQLite UNIQUE constraint failure → 409, treat as "already linked"
+    if (/UNIQUE/i.test(error.message))
+      return void res
+        .status(409)
+        .json({ detail: "Link already exists" });
+    return void res.status(500).json({ detail: error.message });
+  }
+  res.status(201).json(data);
+});
+
+// DELETE /projects/:projectId/links/:linkId
+projectsRouter.delete(
+  "/:projectId/links/:linkId",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
+    const { projectId, linkId } = req.params;
+    const db = createServerSupabase();
+
+    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    if (!access.ok)
+      return void res.status(404).json({ detail: "Project not found" });
+
+    // Only the link's creator (or project owner) can delete it. Shared
+    // members can add their own links but not erase someone else's.
+    const { data: link } = await db
+      .from("document_links")
+      .select("id, user_id, project_id")
+      .eq("id", linkId)
+      .eq("project_id", projectId)
+      .single();
+    if (!link)
+      return void res.status(404).json({ detail: "Link not found" });
+    if (link.user_id !== userId && !access.isOwner)
+      return void res.status(403).json({ detail: "Not allowed" });
+
+    const { error } = await db
+      .from("document_links")
+      .delete()
+      .eq("id", linkId)
+      .eq("project_id", projectId);
+    if (error) return void res.status(500).json({ detail: error.message });
+    res.status(204).send();
+  },
+);
+
+// POST /projects/:projectId/links/bulk
+// Persist a list of accepted LLM proposals in one round trip. Each entry is
+// validated the same way as the manual POST; duplicates inside the project
+// are skipped silently so the caller can re-submit without 4xx-ing.
+projectsRouter.post(
+  "/:projectId/links/bulk",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
+    const { projectId } = req.params;
+    const { proposals } = req.body as {
+      proposals?: Array<{
+        source_doc_id?: string;
+        target_doc_id?: string;
+        link_type?: string;
+        citation_text?: string;
+      }>;
+    };
+    if (!Array.isArray(proposals) || proposals.length === 0)
+      return void res.status(400).json({ detail: "proposals[] required" });
+
+    const db = createServerSupabase();
+    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    if (!access.ok)
+      return void res.status(404).json({ detail: "Project not found" });
+
+    // Pre-fetch the project's documents once so we can validate every
+    // proposal against the in-project doc set without N round-trips.
+    const { data: projectDocs } = await db
+      .from("documents")
+      .select("id")
+      .eq("project_id", projectId);
+    const projectDocIds = new Set(
+      ((projectDocs ?? []) as { id: string }[]).map((d) => d.id),
+    );
+
+    const inserted: unknown[] = [];
+    const skipped: { reason: string; proposal: unknown }[] = [];
+
+    for (const p of proposals) {
+      if (
+        !p.source_doc_id ||
+        !p.target_doc_id ||
+        p.source_doc_id === p.target_doc_id ||
+        !projectDocIds.has(p.source_doc_id) ||
+        !projectDocIds.has(p.target_doc_id)
+      ) {
+        skipped.push({ reason: "invalid_docs", proposal: p });
+        continue;
+      }
+      const type = normaliseLinkType(p.link_type);
+      if (type === null) {
+        skipped.push({ reason: "invalid_type", proposal: p });
+        continue;
+      }
+      const { data, error } = await db
+        .from("document_links")
+        .insert({
+          project_id: projectId,
+          source_doc_id: p.source_doc_id,
+          target_doc_id: p.target_doc_id,
+          link_type: type,
+          citation_text: p.citation_text ?? null,
+          created_by: "llm",
+          user_id: userId,
+        })
+        .select("*")
+        .single();
+      if (error) {
+        skipped.push({ reason: "db_error", proposal: p });
+        continue;
+      }
+      inserted.push(data);
+    }
+    res.json({ inserted, skipped });
+  },
+);
+
+// POST /projects/:projectId/links/extract
+// Run the LLM citation-extraction pass. Returns proposed edges without
+// persisting them — the frontend renders them in a review modal so the user
+// can accept/reject before they land in document_links via /links/bulk.
+//
+// Cost discipline: we send the model a per-doc summary (filename + first
+// ~3 KB of extracted text), not the full body. Project size is capped at
+// 40 docs per call to keep the prompt bounded; larger projects will need
+// a chunked pass (deferred).
+const EXTRACT_MAX_DOCS = 40;
+const EXTRACT_SLICE_CHARS = 3000;
+
+interface ExtractProposal {
+  source_doc_id: string;
+  target_doc_id: string;
+  link_type: string;
+  citation_text: string;
+}
+
+async function loadDocText(
+  doc: { id: string; file_type: string | null; filename: string },
+  db: ReturnType<typeof createServerSupabase>,
+): Promise<string> {
+  // Try the active version first (matches read_document behaviour); fall back
+  // to nothing if bytes unavailable. Silent fallback — extraction shouldn't
+  // hard-fail because one doc didn't load.
+  try {
+    const current = await loadCurrentVersionBytes(doc.id, db);
+    if (!current) return "";
+    if (doc.file_type === "pdf") {
+      const ab = current.bytes.buffer.slice(
+        current.bytes.byteOffset,
+        current.bytes.byteOffset + current.bytes.byteLength,
+      ) as ArrayBuffer;
+      return (await extractPdfText(ab)).slice(0, EXTRACT_SLICE_CHARS);
+    }
+    if (doc.file_type === "docx" || doc.file_type === "doc") {
+      const t = await extractDocxBodyText(current.bytes);
+      return (t ?? "").slice(0, EXTRACT_SLICE_CHARS);
+    }
+    return current.bytes.toString("utf8").slice(0, EXTRACT_SLICE_CHARS);
+  } catch (e) {
+    console.warn(`[extract-links] failed to load text for ${doc.id}`, e);
+    return "";
+  }
+}
+
+projectsRouter.post(
+  "/:projectId/links/extract",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
+    const { projectId } = req.params;
+    const db = createServerSupabase();
+
+    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    if (!access.ok)
+      return void res.status(404).json({ detail: "Project not found" });
+
+    const settings = await getUserModelSettings(userId, db);
+    const hasKey = !!(settings.api_keys.claude || settings.api_keys.gemini);
+    if (!hasKey)
+      return void res.status(400).json({
+        detail:
+          "No model API key configured. Add one in Settings → Models & API Keys.",
+      });
+
+    const { data: docs } = await db
+      .from("documents")
+      .select("id, filename, file_type, status, current_version_id")
+      .eq("project_id", projectId);
+    const allDocs = (docs ?? []) as {
+      id: string;
+      filename: string;
+      file_type: string | null;
+      status: string;
+      current_version_id: string | null;
+    }[];
+    const readyDocs = allDocs.filter((d) => d.status === "ready");
+    if (readyDocs.length < 2)
+      return void res.json({
+        proposals: [],
+        note: "Need at least 2 ready documents.",
+      });
+    if (readyDocs.length > EXTRACT_MAX_DOCS)
+      return void res.status(400).json({
+        detail: `Project has ${readyDocs.length} documents; extraction is capped at ${EXTRACT_MAX_DOCS} per call.`,
+      });
+
+    // Preload text in parallel — bounded by readyDocs.length ≤ 40.
+    const texts = await Promise.all(readyDocs.map((d) => loadDocText(d, db)));
+
+    // Index docs by their position in the prompt; the model is asked to use
+    // these compact IDs in its output instead of full UUIDs, which (a) saves
+    // tokens and (b) makes us robust to the model truncating UUID strings.
+    const indexed = readyDocs.map((d, i) => ({
+      tag: `D${i + 1}`,
+      doc: d,
+      text: texts[i],
+    }));
+
+    const promptDocs = indexed
+      .map(
+        ({ tag, doc, text }) =>
+          `### ${tag}: ${doc.filename}\n${text || "(text unavailable)"}`,
+      )
+      .join("\n\n");
+
+    const system = `You are a legal-document analyst. Identify cross-references between the supplied documents: when one document references, amends, supersedes, or otherwise relates to another. Be precise — only emit a link when the source text clearly refers to the target.`;
+    const user = `For each pair of documents below, identify any cross-references from one to another.
+
+Documents (each labelled with a tag like D1, D2):
+
+${promptDocs}
+
+Reply with ONLY a JSON object in this exact shape, no prose, no markdown fence:
+{
+  "proposals": [
+    {
+      "source": "D1",
+      "target": "D2",
+      "link_type": "references | amends | supersedes | exhibit-of | cited-by | related",
+      "citation": "short verbatim snippet from the source"
+    }
+  ]
+}
+Keep each citation under 120 characters. If there are no cross-references, return {"proposals": []}.`;
+
+    let raw: string;
+    try {
+      raw = await completeText({
+        model: settings.tabular_model,
+        systemPrompt: system,
+        user,
+        maxTokens: 8192,
+        apiKeys: settings.api_keys,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return void res
+        .status(502)
+        .json({ detail: `LLM call failed: ${msg.slice(0, 200)}` });
+    }
+
+    // Models routinely wrap JSON in prose ("Here are the citations:…") or in
+    // ```json fences despite instructions. Strategy: strip an outer fence,
+    // then fall back to slicing between the first `{` and the matching last
+    // `}` so leading/trailing prose doesn't kill the parse.
+    function tryParse(text: string): { proposals?: unknown } | null {
+      try {
+        return JSON.parse(text) as { proposals?: unknown };
+      } catch {
+        return null;
+      }
+    }
+
+    const stripped = raw
+      .trim()
+      .replace(/^```(?:json)?\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+
+    let parsed = tryParse(stripped);
+    if (!parsed) {
+      const first = stripped.indexOf("{");
+      const last = stripped.lastIndexOf("}");
+      if (first !== -1 && last > first) {
+        parsed = tryParse(stripped.slice(first, last + 1));
+      }
+    }
+    if (!parsed) {
+      console.warn(
+        `[extract-links] model returned non-JSON (len=${raw.length}): ${raw.slice(0, 500)}`,
+      );
+      return void res.status(502).json({
+        detail: "Model did not return valid JSON.",
+        sample: raw.slice(0, 300),
+      });
+    }
+
+    const ALLOWED_TYPES = new Set([
+      "references",
+      "amends",
+      "supersedes",
+      "exhibit-of",
+      "cited-by",
+      "related",
+    ]);
+    const tagToId = new Map(indexed.map((x) => [x.tag, x.doc.id]));
+
+    const proposals: ExtractProposal[] = [];
+    const rawProposals = Array.isArray(parsed.proposals) ? parsed.proposals : [];
+    for (const r of rawProposals as Record<string, unknown>[]) {
+      const sourceTag = typeof r.source === "string" ? r.source : "";
+      const targetTag = typeof r.target === "string" ? r.target : "";
+      const type = typeof r.link_type === "string" ? r.link_type.toLowerCase() : "";
+      const citation = typeof r.citation === "string" ? r.citation : "";
+      const sourceId = tagToId.get(sourceTag);
+      const targetId = tagToId.get(targetTag);
+      if (
+        !sourceId ||
+        !targetId ||
+        sourceId === targetId ||
+        !ALLOWED_TYPES.has(type)
+      ) {
+        continue;
+      }
+      proposals.push({
+        source_doc_id: sourceId,
+        target_doc_id: targetId,
+        link_type: type,
+        citation_text: citation.slice(0, 500),
+      });
+    }
+
+    // De-duplicate against existing links so the modal doesn't waste the
+    // user's time asking about edges that already exist.
+    const { data: existing } = await db
+      .from("document_links")
+      .select("source_doc_id, target_doc_id, link_type")
+      .eq("project_id", projectId);
+    const existingKey = new Set(
+      ((existing ?? []) as {
+        source_doc_id: string;
+        target_doc_id: string;
+        link_type: string;
+      }[]).map((l) => `${l.source_doc_id}|${l.target_doc_id}|${l.link_type}`),
+    );
+    const novel = proposals.filter(
+      (p) =>
+        !existingKey.has(`${p.source_doc_id}|${p.target_doc_id}|${p.link_type}`),
+    );
+
+    res.json({ proposals: novel, model: settings.tabular_model });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Graph layout (saved node positions, per-user)
+// ---------------------------------------------------------------------------
+
+// GET /projects/:projectId/graph-layout
+// Returns { positions: { [docId]: { x, y } } } or { positions: {} } if the
+// user hasn't saved one yet. Layouts are per-user, so the renderer always
+// reads via the authenticated user's row.
+projectsRouter.get(
+  "/:projectId/graph-layout",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
+    const { projectId } = req.params;
+    const db = createServerSupabase();
+    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    if (!access.ok)
+      return void res.status(404).json({ detail: "Project not found" });
+
+    const { data } = await db
+      .from("document_graph_layouts")
+      .select("positions")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .maybeSingle();
+    res.json({ positions: data?.positions ?? {} });
+  },
+);
+
+// PUT /projects/:projectId/graph-layout
+// Upserts the saved layout for this user. Body: { positions: {...} }.
+projectsRouter.put(
+  "/:projectId/graph-layout",
+  requireAuth,
+  async (req, res) => {
+    const userId = res.locals.userId as string;
+    const userEmail = res.locals.userEmail as string | undefined;
+    const { projectId } = req.params;
+    const positions = (req.body as { positions?: unknown })?.positions;
+
+    if (
+      typeof positions !== "object" ||
+      positions === null ||
+      Array.isArray(positions)
+    )
+      return void res
+        .status(400)
+        .json({ detail: "positions must be an object" });
+
+    // Validate the shape: every value must be {x: number, y: number}. Reject
+    // anything else so we don't store garbage that crashes the renderer on
+    // the next load.
+    for (const [k, v] of Object.entries(positions as Record<string, unknown>)) {
+      if (typeof k !== "string" || !v || typeof v !== "object") {
+        return void res
+          .status(400)
+          .json({ detail: "invalid position entry" });
+      }
+      const pos = v as { x?: unknown; y?: unknown };
+      if (typeof pos.x !== "number" || typeof pos.y !== "number") {
+        return void res
+          .status(400)
+          .json({ detail: "x/y must be numbers" });
+      }
+    }
+
+    const db = createServerSupabase();
+    const access = await checkProjectAccess(projectId, userId, userEmail, db);
+    if (!access.ok)
+      return void res.status(404).json({ detail: "Project not found" });
+
+    // Upsert manually: the shim doesn't support PostgREST `upsert()`. Check
+    // for an existing row, then UPDATE or INSERT accordingly.
+    const { data: existing } = await db
+      .from("document_graph_layouts")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (existing?.id) {
+      const { error } = await db
+        .from("document_graph_layouts")
+        .update({
+          positions,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+      if (error) return void res.status(500).json({ detail: error.message });
+    } else {
+      const { error } = await db.from("document_graph_layouts").insert({
+        project_id: projectId,
+        user_id: userId,
+        positions,
+      });
+      if (error) return void res.status(500).json({ detail: error.message });
+    }
+    res.json({ ok: true });
+  },
+);
 
 export async function handleDocumentUpload(
   req: import("express").Request,

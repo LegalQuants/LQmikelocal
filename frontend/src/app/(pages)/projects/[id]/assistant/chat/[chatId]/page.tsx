@@ -9,7 +9,7 @@ import {
     useRef,
     useState,
 } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
     ChevronLeft,
     ChevronRight,
@@ -198,6 +198,8 @@ function Divider({ onDrag }: { onDrag: (dx: number) => void }) {
 export default function ProjectAssistantChatPage({ params }: Props) {
     const { id: projectId, chatId } = use(params);
     const router = useRouter();
+    const searchParams = useSearchParams();
+    const attachDocId = searchParams.get("attachDoc");
 
     const { setSidebarOpen } = useSidebar();
     const { user } = useAuth();
@@ -260,6 +262,24 @@ export default function ProjectAssistantChatPage({ params }: Props) {
     const hasLoaded = useRef(false);
     const hasAutoSent = useRef(false);
     const hasInitialScrolled = useRef(false);
+    const hasAttachedDoc = useRef(false);
+
+    // When arriving from the graph view with ?attachDoc=<id>, push the doc
+    // into the ChatInput AND open it in the centre tab so the user lands
+    // with the file both visible and pre-attached for their first message.
+    // Runs once per page mount.
+    useEffect(() => {
+        if (!attachDocId || hasAttachedDoc.current) return;
+        if (!project) return;
+        const doc = (project.documents ?? []).find(
+            (d) => d.id === attachDocId,
+        );
+        if (!doc) return;
+        if (!chatInputRef.current) return;
+        chatInputRef.current.addDoc(doc);
+        openTab(doc.id, doc.filename);
+        hasAttachedDoc.current = true;
+    }, [attachDocId, project]); // eslint-disable-line react-hooks/exhaustive-deps
 
     useEffect(() => {
         setSidebarOpen(false);
